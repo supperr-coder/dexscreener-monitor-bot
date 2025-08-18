@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: tg-price-monitor
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    envVars:
+      - key: TELE_TOKEN
+        sync: false            # set in Render dashboard as a Secret
+      # Optional: override if you want a custom domain or to be explicit
+      # - key: PUBLIC_URL
+      #   value: https://tg-price-monitor.onrender.co
