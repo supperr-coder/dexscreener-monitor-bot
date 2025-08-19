@@ -8,7 +8,9 @@ services:
     autoDeploy: true
     envVars:
       - key: TELE_TOKEN
-        sync: false            # set in Render dashboard as a Secret
-      # Optional: override if you want a custom domain or to be explicit
+        sync: false          # set in dashboard as a Secret
+      - key: DATABASE_URL
+        sync: false          # e.g. postgresql+asyncpg://USER:PASS@HOST:5432/DB
+      # Optional:
       # - key: PUBLIC_URL
-      #   value: https://tg-price-monitor.onrender.co
+      #   value: https://tg-price-monitor.onrender.com

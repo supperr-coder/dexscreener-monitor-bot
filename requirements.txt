@@ -2,4 +2,7 @@ python-telegram-bot[job-queue]==21.9
 fastapi
 uvicorn
 requests
+SQLAlchemy>=2.0
+asyncpg
 python-dotenv
+matplotlib
