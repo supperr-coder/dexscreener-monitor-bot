@@ -10,25 +10,22 @@ from fastapi.responses import PlainTextResponse
 from telegram import Update, InputFile
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# Headless plotting
+# headless plotting
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("tg-monitor")
 
-# ----------------- Config -----------------
 TELE_TOKEN = os.environ.get("TELE_TOKEN")
 if not TELE_TOKEN:
     raise RuntimeError("Missing TELE_TOKEN env var")
 
 PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")).rstrip("/")
-BUCKET_SECS = int(os.environ.get("PRICE_BUCKET_SECONDS", "5"))  # quantize ts so duplicates collapse
+BUCKET_SECS = int(os.environ.get("PRICE_BUCKET_SECONDS", "8"))
 
-# ----------------- DB imports -----------------
 from db import (
     init_db,
     Session,
@@ -44,14 +41,11 @@ from db import (
     delete_prices_older_than,
 )
 
-# ----------------- Data fetcher -----------------
 class MonitorToken:
     BASE_URL = "https://api.dexscreener.com"
-
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update({"User-Agent": "dex-monitor/1.0"})
-
     def get_token_pairs(self, chain_id: str, token_address: str):
         url = f"{self.BASE_URL}/tokens/v1/{chain_id}/{token_address}"
         r = self.session.get(url, timeout=10)
@@ -59,13 +53,11 @@ class MonitorToken:
         res = r.json()
         if isinstance(res, dict) and "pairs" in res:
             return res["pairs"]
-        return res  # assume list
+        return res
 
 monitor_api = MonitorToken()
 
-# ----------------- Jobs -----------------
 async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
-    """Repeats every N seconds per /monitor request."""
     data = context.job.data
     chat_id = data["chat_id"]
     token_address = data["token_address"]
@@ -91,7 +83,6 @@ async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
 
         price_usd_new = float(price_usd_str)
         now_s = int(time.time())
-        # bucket to 8-second steps so multiple monitors share same ts
         ts_bucket = datetime.utcfromtimestamp((now_s // BUCKET_SECS) * BUCKET_SECS)
 
         if prev_price is None:
@@ -100,14 +91,10 @@ async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
             pct = round((price_usd_new - prev_price) / (prev_price or 1e-9) * 100, 2)
             if abs(pct) >= threshold:
                 await context.bot.send_message(
-                    chat_id,
-                    text=f"⚡ {symbol}/USD: {pct}% | ({ts_bucket} UTC): ${price_usd_new}"
+                    chat_id, text=f"⚡ {symbol}/USD: {pct}% | ({ts_bucket} UTC): ${price_usd_new}"
                 )
-
-        # Persist new state
         data["prev_price"] = price_usd_new
 
-        # DB writes
         async with Session() as s:
             async with s.begin():
                 await store_price(s, chain_id, token_address, ts_bucket, price_usd_new)
@@ -122,7 +109,6 @@ async def monitor_job(context: ContextTypes.DEFAULT_TYPE):
         context.job.schedule_removal()
 
 async def retention_job(context: ContextTypes.DEFAULT_TYPE):
-    """Deletes price rows older than 24h (runs hourly)."""
     cutoff = datetime.utcnow() - timedelta(hours=24)
     try:
         async with Session() as s:
@@ -133,7 +119,6 @@ async def retention_job(context: ContextTypes.DEFAULT_TYPE):
     except Exception:
         log.exception("Retention job failed")
 
-# ----------------- Handlers -----------------
 async def start(update, context):
     await update.message.reply_text(
         "Send /monitor <tokenAddress> [threshold(%)] [chain]\n"
@@ -141,6 +126,14 @@ async def start(update, context):
         "Use /stop <tokenAddress> to stop.\n"
         "Use /chart <tokenAddress> [hours] [chain] to view a line chart."
     )
+
+def _parse_hours(arg: str) -> float:
+    s = arg.strip().lower()
+    if s.endswith("h"):
+        return float(s[:-1] or "0")
+    if s.endswith("m"):
+        return float(s[:-1] or "0") / 60.0
+    return float(s)
 
 async def monitor(update, context):
     chat_id = update.effective_chat.id
@@ -157,21 +150,16 @@ async def monitor(update, context):
         threshold = 3.0
     chain_id = context.args[2] if len(context.args) >= 3 else "solana"
 
-    # Persist user/chat/token + create/refresh active monitor
     async with Session() as s:
         async with s.begin():
             await ensure_user_chat(
-                s,
-                user_id=user.id,
-                username=user.username,
-                chat_id=chat_id,
-                chat_type=update.effective_chat.type,
+                s, user_id=user.id, username=user.username,
+                chat_id=chat_id, chat_type=update.effective_chat.type,
                 title=getattr(update.effective_chat, "title", None),
             )
             await ensure_token(s, chain_id, token_address, symbol=None)
             monitor_id = await upsert_monitor(s, chat_id, chain_id, token_address, threshold)
 
-    # Schedule/replace job
     job_name = f"monitor-{chat_id}-{token_address}"
     for job in context.job_queue.get_jobs_by_name(job_name):
         job.schedule_removal()
@@ -202,12 +190,10 @@ async def stop(update, context):
     token_address = context.args[0]
     chain_id = context.args[1] if len(context.args) >= 2 else "solana"
 
-    # Deactivate in DB
     async with Session() as s:
         async with s.begin():
             _ = await deactivate_monitor(s, chat_id, chain_id, token_address)
 
-    # Remove any scheduled job
     job_name = f"monitor-{chat_id}-{token_address}"
     jobs = context.job_queue.get_jobs_by_name(job_name)
     if not jobs:
@@ -216,14 +202,6 @@ async def stop(update, context):
     for j in jobs:
         j.schedule_removal()
     await update.message.reply_text(f"🛑 Stopped monitoring {token_address}.")
-
-def _parse_hours(arg: str) -> float:
-    s = arg.strip().lower()
-    if s.endswith("h"):
-        return float(s[:-1] or "0")
-    if s.endswith("m"):
-        return float(s[:-1] or "0") / 60.0
-    return float(s)  # plain number = hours
 
 async def chart(update, context):
     """Usage: /chart <tokenAddr> [hours] [chain]"""
@@ -241,7 +219,6 @@ async def chart(update, context):
             if len(context.args) >= 3:
                 chain_id = context.args[2]
         except ValueError:
-            # second arg is probably the chain
             chain_id = context.args[1]
             if len(context.args) >= 3:
                 hours = _parse_hours(context.args[2])
@@ -258,11 +235,9 @@ async def chart(update, context):
         return
 
     times, prices = zip(*pts)
-    # how much history we actually have
     span = (times[-1] - times[0]).total_seconds()
     span_h, span_m = int(span // 3600), int((span % 3600) // 60)
 
-    # plot
     fig, ax = plt.subplots(figsize=(8, 3))
     ax.plot(times, prices, linewidth=1.25)
     ax.set_xlabel("Time (UTC)")
@@ -282,17 +257,15 @@ async def chart(update, context):
     caption = f"{name} ({chain_id}) — {len(prices)} points • past {span_h}h {span_m}m"
     await update.message.reply_photo(photo=InputFile(buf, filename="chart.png"), caption=caption)
 
-# ----------------- FastAPI + PTB Application -----------------
+# ----------------- FastAPI + PTB -----------------
 app = FastAPI()
 tg = ApplicationBuilder().token(TELE_TOKEN).build()
 
-# register handlers
 tg.add_handler(CommandHandler("start", start))
 tg.add_handler(CommandHandler("monitor", monitor))
 tg.add_handler(CommandHandler("stop", stop))
 tg.add_handler(CommandHandler("chart", chart))
 
-# error handler
 async def error_handler(update, context):
     import traceback
     log.error("Exception while handling update: %s", traceback.format_exc())
@@ -310,7 +283,6 @@ async def on_startup():
     else:
         log.warning("PUBLIC_URL/RENDER_EXTERNAL_URL not set; webhook not configured.")
 
-    # Reschedule active monitors from DB
     async with Session() as s:
         mons = await active_monitors(s)
         for m in mons:
@@ -333,7 +305,6 @@ async def on_startup():
             )
         log.info("Rescheduled %d active monitors from DB", len(mons))
 
-    # Start hourly retention job
     tg.job_queue.run_repeating(retention_job, interval=3600.0, first=60.0, name="retention-24h")
 
 @app.on_event("shutdown")
@@ -360,7 +331,7 @@ async def webhook(request: Request):
     await tg.process_update(update)
     return {"ok": True}
 
-# Local dev (polling)
+# Local dev polling
 if __name__ == "__main__":
     import asyncio
     async def _main():
