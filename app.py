@@ -26,7 +26,7 @@ if not TELE_TOKEN:
     raise RuntimeError("Missing TELE_TOKEN env var")
 
 PUBLIC_URL = (os.environ.get("PUBLIC_URL") or os.environ.get("RENDER_EXTERNAL_URL", "")).rstrip("/")
-BUCKET_SECS = int(os.environ.get("PRICE_BUCKET_SECONDS", "8"))  # quantize ts so duplicates collapse
+BUCKET_SECS = int(os.environ.get("PRICE_BUCKET_SECONDS", "5"))  # quantize ts so duplicates collapse
 
 # ----------------- DB imports -----------------
 from db import (
