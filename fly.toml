@@ -1,0 +1,15 @@
+# fly.toml
+app = "dexscreener-monitor-bot"
+primary_region = "sin"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  strategy = "immediate"
+
+[env]
+  PRICE_BUCKET_SECONDS = "8"
+
+# No [[services]] block -> this is a worker app (no inbound ports).
+# If you ever want HTTP/webhook on Fly, add [[services]] and run uvicorn instead.
